@@ -1,65 +1,109 @@
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from datetime import datetime
 import pandas as pd
-import time
 import subprocess
 import sys
+import time
+import os
 
-
-# 1. Setup Driver (Pastikan chromedriver sesuai dengan versi Chrome kamu)
+# 1. Setup Driver
 driver = webdriver.Chrome()
 
-# 2. Buka halaman Tokopedia dengan pencarian spesifik
+# 2. Buka halaman Tokopedia
 url = "https://www.tokopedia.com/search?q=kopi%20gayo"
 driver.get(url)
 
-# 3. Teknik 'Menunggu' agar satpam tidak curiga dan data muncul semua
-# Kita tunggu sampai elemen produk muncul di layar
-wait = WebDriverWait(driver, 10)
 products = []
 
 try:
-    # Scroll perlahan ke bawah agar semua produk ter-load (Lazy Load)
-    for i in range(10):
-        driver.execute_script("window.scrollBy(0, 500);")
+        # 3. Proses Scroll dan Klik Muat Lebih Banyak
+    for i in range(10): 
+        driver.execute_script("window.scrollBy(0, 1000);")
         time.sleep(2)
+        try:
+            # Mencari tombol berdasarkan TEKS, ini lebih ampuh daripada class
+            load_more_button = driver.find_element(By.CSS_SELECTOR, 'button.css-1turmok-unf-btn.eg8apji0')
+            
+            # pakai JS click biar lebih reliable
+            driver.execute_script("arguments[0].click();", load_more_button)
+            
+            print(f"Klik 'Muat lebih banyak' ke-{i+1}...")
+            time.sleep(5) 
+        except:
+            pass
 
-    # 4. Mencari elemen produk menggunakan Selector
-    # Catatan: Class name bisa berubah sewaktu-waktu (sering diupdate oleh Tokopedia)
-    items = driver.find_elements(By.CSS_SELECTOR, 'div[class="css-5wh65g"]')
+    # 4. AMBIL SEMUA DATA MENGGUNAKAN CLASS YANG KAMU TEMUKAN
+    # Kita gunakan class utama 'css-5wh65g' atau '.css-5466v' sebagai jangkar
+    items = driver.find_elements(By.CSS_SELECTOR, '.css-5wh65g, .css-5466v, .css-1asz3by')
+    print(f"Total produk terdeteksi: {len(items)}")
 
-    if len(items) == 0:
-        items = driver.find_elements(By.CSS_SELECTOR, '.css-5466v')
     for item in items:
         try:
-            # Menggunakan pencarian berdasarkan atribut data-testid (lebih stabil dari class css-xxx)
-            nama = item.find_element(By.CSS_SELECTOR, 'div[class="SzILjt4fxHUFNVT48ZPhHA=="]').text
-            harga = item.find_element(By.CSS_SELECTOR, 'div[class="urMOIDHH7I0Iy1Dv2oFaNw== HJhoi0tEIlowsgSNDNWVXg=="]').text
+            # Menggunakan class statis yang kamu temukan sebelumnya
+            # Nama Produk
+            nama = item.find_element(By.CSS_SELECTOR, 'div[class*="SzILjt"]').text
             
-            # Untuk rating, kita coba cari elemen yang mengandung teks angka bintang
+            # Harga Sekarang
+            harga_skrg = item.find_element(By.CSS_SELECTOR, 'div[class*="urMOID"]').text
+            
+            # Harga Sebelum Promo & Diskon (Hanya jika ada)
             try:
-                rating = item.find_element(By.CSS_SELECTOR, 'span[class="_2NfJxPu4JC-55aCJ8bEsyw=="]').text
+                # Cari div yang isinya harga coret
+                harga_asli = item.find_element(By.CSS_SELECTOR, 'span[class*="hC1B"]').text
+                diskon = item.find_element(By.CSS_SELECTOR, 'span[class*="_7UCY"]').text
             except:
-                rating = "N/A" # Jika tidak ada rating
-                
+                harga_asli = harga_skrg
+                diskon = "0%"
+
+            # Nama Toko & Lokasi (Biasanya ada di dalam container yang sama)
+            try:
+                # Mencari elemen yang berisi nama toko (biasanya di bawah harga)
+                info_toko = item.find_elements(By.CSS_SELECTOR, 'span[class*="si3CNdi"]')
+                toko = info_toko[1].text if len(info_toko) > 1 else info_toko[0].text
+                lokasi = info_toko[0].text if len(info_toko) > 1 else "N/A"
+            except:
+                toko = "N/A"
+                lokasi = "N/A"
+
+            # Rating & Terjual
+            try:
+                # Mencari rating (bintang)
+                rating = item.find_element(By.CSS_SELECTOR, 'span[class*="_2NfJxPu4JC-55aCJ8bEsyw=="]').text
+                # Mencari jumlah terjual
+                terjual = item.find_element(By.CSS_SELECTOR, 'span[class*="u6SfjDD2WiBlNW7zHmzRhQ=="]').text
+            except:
+                rating = "0"
+                terjual = "0"
+
             products.append({
                 'Nama Produk': nama,
-                'Harga': harga,
-                'Rating': rating
+                'Harga Sekarang': harga_skrg,
+                'Harga Asli': harga_asli,
+                'Diskon': diskon,
+                'Toko': toko,
+                'Lokasi': lokasi,
+                'Rating': rating,
+                'Terjual': terjual
             })
-        except Exception as e:
-            # Skip jika ada satu elemen yang gagal diambil agar tidak menghentikan seluruh proses
+        except:
             continue
 
 finally:
-    # 5. Simpan ke dalam tabel (Pandas) dan tutup browser
+    # 5. Simpan Data
+    if not os.path.exists('hasil'):
+        os.makedirs('hasil')
+
     df = pd.DataFrame(products)
-    print(df.head())
-    df.to_csv('hasil/data_tokopedia.csv', index=False)
+    df = df.drop_duplicates()
+    
+    print(f"Selesai! Berhasil mengambil {len(df)} data produk.")
+    
+    tgl_hariIni = datetime.now().strftime("%d-%m-%Y")
+    df.to_csv(f'hasil/raw/data_tokopedia_{tgl_hariIni}.csv', index=False)
     driver.quit()
 
+# Jalankan script cleaning
 subprocess.run([sys.executable, "cleaning.py"])
