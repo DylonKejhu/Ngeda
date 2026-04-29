@@ -1,150 +1,126 @@
-from datetime import datetime
 import pandas as pd
 import glob
 import os
+from datetime import datetime
 
-# Helper timeline
+
+# Helper log
 def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}")
 
-# Helper parse tanggal dari nama file cleaned (format: data_tokopedia_DD-MM-YYYY.csv)
-def parse_tgl(path):
-    nama = os.path.basename(path)
-    tgl_str = nama.replace('data_tokopedia_', '').replace('.csv', '')
-    try:
-        return datetime.strptime(tgl_str, "%d-%m-%Y")
-    except ValueError:
-        return datetime.min
 
-# 1. Load semua cleaned data
-files = glob.glob('hasil/cleaned/data_tokopedia*.csv')
+print("\nLanjut Ngeda Massal...")
+
+
+# 1. Ambil semua file dari folder cleaned
+files = glob.glob('hasil/cleaned/*.csv')
+
 
 if len(files) == 0:
-    raise Exception("Tidak ada data cleaned ditemukan.")
+    # Jika dijalankan lokal dan file yang diupload ada di folder yang sama,
+    # sesuaikan pathnya jika perlu
+    raise Exception("Tidak ada file di folder hasil/cleaned.")
 
-files = sorted(files, key=parse_tgl)
 
-old_file = files[0]
-new_file = files[-1]
+log(f"Membaca {len(files)} file cleaned...")
+list_df = []
+for file in files:
+    temp_df = pd.read_csv(file)
+    list_df.append(temp_df)
 
-old = pd.read_csv(old_file)
-new = pd.read_csv(new_file)
 
-log(f"Data lama: {os.path.basename(old_file)} ({len(old)} baris)")
-log(f"Data baru: {os.path.basename(new_file)} ({len(new)} baris)")
+# Menggabungkan semua dataframe
+df = pd.concat(list_df, ignore_index=True)
+log(f"Total data gabungan: {len(df)} baris")
 
-# Fix tipe data
-numeric_cols = ['Harga', 'Rating', 'Terjual', 'Harga per Gram']
 
-for col in numeric_cols:
-    if col in old.columns:
-        old[col] = pd.to_numeric(old[col], errors='coerce')
-    if col in new.columns:
-        new[col] = pd.to_numeric(new[col], errors='coerce')
+# --- PERBAIKAN TIPE DATA (Sesuai Struktur File Anda) ---
 
-if 'Diskon' in new.columns:
-    new['Diskon'] = (
-        new['Diskon']
-        .astype(str)
-        .str.replace('%', '', regex=False)
-        .str.strip()
-    )
-    new['Diskon'] = pd.to_numeric(new['Diskon'], errors='coerce')
 
-log("Tipe data diperbaiki")
+# 1. Bersihkan Diskon (buang % lalu jadi float)
+if 'Diskon' in df.columns:
+    df['Diskon'] = df['Diskon'].astype(str).str.replace('%', '', regex=False)
+    df['Diskon'] = pd.to_numeric(df['Diskon'], errors='coerce').fillna(0)
 
-# 2. Statistik Dasar
-def basic_stats(df, label):
-    print(f"\n===== Statistik {label} =====")
-    print(f"Jumlah Produk      : {len(df)}")
-    print(f"Rata-rata Harga    : {df['Harga'].mean():,.0f}")
-    print(f"Median Harga       : {df['Harga'].median():,.0f}")
-    print(f"Min Harga          : {df['Harga'].min():,.0f}")
-    print(f"Max Harga          : {df['Harga'].max():,.0f}")
-    print(f"Std Harga          : {df['Harga'].std():,.0f}")
-    print(f"Rata-rata Rating   : {df['Rating'].mean():.2f}")
-    print(f"Total Terjual      : {df['Terjual'].sum():,.0f}")
-    print(f"Rata-rata Harga/Gr : {df['Harga per Gram'].mean():.2f}")
 
-log("Menghitung statistik dasar...")
-basic_stats(old, "DATA LAMA")
-basic_stats(new, "DATA BARU")
+# 2. Pastikan kolom numerik lainnya benar
+# Perhatikan: Nama kolom disesuaikan dengan file CSV Anda
+mapping_kolom = {
+    'Harga': 'Harga',
+    'Terjual': 'Terjual',
+    'Berat per Gram': 'Berat per Gram',
+    'Harga per Gram': 'Harga per Gram',
+    'Rating': 'Rating'
+}
 
-# 3. Top Produk
-log("Menyusun top produk...")
-print("\n===== Top 5 Termurah (Harga per Gram) =====")
-print(new.nsmallest(5, 'Harga per Gram')[['Nama Produk', 'Harga per Gram']].to_string(index=False))
 
-print("\n===== Top 5 Termahal (Harga per Gram) =====")
-print(new.nlargest(5, 'Harga per Gram')[['Nama Produk', 'Harga per Gram']].to_string(index=False))
+for klm in mapping_kolom.values():
+    if klm in df.columns:
+        df[klm] = pd.to_numeric(df[klm], errors='coerce')
 
-# 4. Produk Paling Laris
-print("\n===== Top 5 Produk Terlaris =====")
-print(new.nlargest(5, 'Terjual')[['Nama Produk', 'Terjual']].to_string(index=False))
 
-# 5. Distribusi Rating
-print("\n===== Distribusi Rating =====")
-print(new['Rating'].describe())
+# Hapus data yang benar-benar kosong di kolom kunci agar korelasi tidak nan
+df = df.dropna(subset=['Harga', 'Terjual'])
 
-# 6. Korelasi
-log("Menghitung korelasi...")
-print("\n===== Korelasi =====")
-corr = new[['Harga', 'Rating', 'Terjual', 'Harga per Gram']].corr()
-print(corr)
 
-# 7. Perbandingan Lama vs Baru
-log("Membandingkan data lama vs baru...")
-print("\n===== PERBANDINGAN LAMA vs BARU =====")
+# --- MULAI EDA ---
 
-def compare(metric, name):
-    old_val = old[metric].mean()
-    new_val = new[metric].mean()
-    diff = new_val - old_val
-    pct = (diff / old_val * 100) if old_val != 0 else 0
-    print(f"{name}: {old_val:.2f} → {new_val:.2f} ({diff:+.2f}, {pct:+.2f}%)")
 
-compare('Harga', 'Rata-rata Harga')
-compare('Rating', 'Rata-rata Rating')
-compare('Terjual', 'Rata-rata Terjual')
-compare('Harga per Gram', 'Harga per Gram')
+# 1. Pengaruh Diskon dan Jumlah Pembelian
+corr_diskon_jual = df['Diskon'].corr(df['Terjual'], method='spearman')
+print(f"\nKekuatan pengaruh diskon terhadap penjualan: {corr_diskon_jual:.2f}")
 
-# 8. Analisis Toko
-print("\n===== Top Toko (Jumlah Produk) =====")
-print(new['Toko'].value_counts().head(5).to_string())
 
-print("\n===== Top Lokasi =====")
-print(new['Lokasi'].value_counts().head(5).to_string())
+# 2. Pengaruh Harga dan Jumlah Pembelian
+corr_harga_jual = df['Harga'].corr(df['Terjual'], method='spearman')
+print(f"Kekuatan pengaruh harga terhadap penjualan: {corr_harga_jual:.2f}")
 
-# 9. Analisis Diskon
-if 'Diskon' in new.columns:
-    print("\n===== Analisis Diskon =====")
-    print(f"Rata-rata Diskon: {new['Diskon'].mean():.2f}%")
-    print(f"Max Diskon      : {new['Diskon'].max():.2f}%")
 
-# 10. Best Value
-log("Menghitung best value & overpriced...")
-print("\n===== Best Value Produk =====")
-best_value = new.sort_values(by=['Harga per Gram', 'Terjual']).head(10)
-print(best_value[['Nama Produk', 'Harga per Gram', 'Terjual']].to_string(index=False))
+# 3. Berat produk yang paling sering dibeli
+if 'Berat per Gram' in df.columns:
+    berat_populer = df.groupby('Berat per Gram')['Terjual'].sum().sort_values(ascending=False)
+    print(f"Berat yang paling banyak laku (total unit): {berat_populer.index[0]} Gram")
 
-# 11. Overpriced
-print("\n===== Overpriced Produk =====")
-overpriced = new.sort_values(by=['Harga per Gram', 'Terjual'], ascending=[False, True]).head(10)
-print(overpriced[['Nama Produk', 'Harga per Gram', 'Terjual']].to_string(index=False))
 
-# 12. Insight Tambahan
-print("\n===== Insight Tambahan =====")
+# 4. Pola harga masing-masing gram (Median)
+if 'Berat per Gram' in df.columns:
+    pola_harga = df.groupby('Berat per Gram')['Harga'].median().sort_values()
+    print("\nMedian harga per kategori berat (10 teratas):")
+    print(pola_harga.head(10))
 
-print("Produk dengan rating tertinggi:")
-print(new.nlargest(3, 'Rating')[['Nama Produk', 'Rating']].to_string(index=False))
 
-print("\nProduk dengan penjualan tertinggi:")
-print(new.nlargest(3, 'Terjual')[['Nama Produk', 'Terjual']].to_string(index=False))
+# 5. Top 5 Produk Paling Laris
+print("\nTop 5 Produk Paling Laris:")
+print(df.nlargest(5, 'Terjual')[['Nama Produk', 'Diskon', 'Harga', 'Terjual']].to_string(index=False))
 
-print("\nHarga vs Penjualan (rata-rata per kuartil):")
-bins = pd.qcut(new['Harga'], 4, duplicates='drop')
-grouped = new.groupby(bins, observed=True)['Terjual'].mean()
-print(grouped.to_string())
 
-print("EDA selesai")
+# 6. Top 5 Produk Paling Sepi
+print("\nTop 5 Produk Paling Sepi Peminat:")
+print(df.nsmallest(5, 'Terjual')[['Nama Produk', 'Diskon', 'Harga', 'Terjual']].to_string(index=False))
+
+
+# 7. Hubungan Diskon dan Penjualan (Sampel)
+kaitan_diskon = df.nlargest(5, 'Diskon')[['Nama Produk', 'Diskon', 'Harga', 'Terjual']]
+print("\nSampel Produk Diskon Tertinggi:")
+print(kaitan_diskon.to_string(index=False))
+
+
+# 8. Ranking Berat Berdasarkan Variasi
+if 'Berat per Gram' in df.columns:
+    ranking_berat = df['Berat per Gram'].value_counts().head(10)
+    print("\nRanking 10 Besar Berat (Variasi Produk Terbanyak):")
+    print(ranking_berat)
+
+
+# 9. 5 Produk Paling Ekonomis
+print("\n5 Produk Paling Ekonomis (Best Value):")
+print(df.nsmallest(5, 'Harga per Gram')[['Nama Produk', 'Harga per Gram', 'Terjual']].to_string(index=False))
+
+
+# 10. 5 Produk Paling Mahal
+print("\n5 Produk Paling Premium (Harga per Gram Tertinggi):")
+print(df.nlargest(5, 'Harga per Gram')[['Nama Produk', 'Harga per Gram', 'Terjual']].to_string(index=False))
+
+
+log("EDA Terbaru Selesai!")
